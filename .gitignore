@@ -1,0 +1,12 @@
+# Secret keys
+.env.local
+
+# Dependencies
+/node_modules
+
+# Next.js build folder
+/.next/
+
+# Other (logs, etc.)
+npm-debug.log*
+*.log
