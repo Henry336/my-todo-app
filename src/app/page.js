@@ -481,19 +481,19 @@ export default function TodoPage() {
             )}
 
            <div className="flex gap-2">
-              <button
-                onClick={(e) => handleSignIn(e)} // 👈 NEW: Pass the event 'e'
-                className="bg-indigo-600 text-white p-2 rounded w-full font-medium hover:bg-indigo-700"
-              >
-                Sign In
-              </button>
-              <button
-                onClick={(e) => handleSignUp(e)} // 👈 NEW: Pass the event 'e'
-                className="bg-gray-200 text-gray-800 p-2 rounded w-full font-medium hover:bg-gray-300"
-              >
-                Sign Up
-              </button>
-            </div>
+  <button
+    onClick={(e) => handleSignIn(e)}
+    className="border p-2 rounded w-full bg-indigo-600 text-white font-medium hover:bg-indigo-700"
+  >
+    Sign In
+  </button>
+  <button
+    onClick={(e) => handleSignUp(e)}
+    className="border p-2 rounded w-full bg-gray-200 text-gray-800 font-medium hover:bg-gray-300"
+  >
+    Sign Up
+  </button>
+</div>
           </form>
 
           {/* Divider */}
