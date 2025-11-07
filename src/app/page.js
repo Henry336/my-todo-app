@@ -227,6 +227,24 @@ export default function TodoPage() {
   const [password, setPassword] = useState("");
   const [authError, setAuthError] = useState(null);
 
+  // 👈 --- NEW STATE ---
+  const [showPassword, setShowPassword] = useState(false); 
+  
+  // --- SVG ICONS (Eye and Eye-Off) ---
+  const EyeIcon = (
+    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" fill="currentColor" viewBox="0 0 16 16">
+      <path d="M10.5 8a2.5 2.5 0 1 1-5 0 2.5 2.5 0 0 1 5 0z"/>
+      <path d="M0 8s3-5.5 8-5.5S16 8 16 8s-3 5.5-8 5.5S0 8 0 8zm8 3.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7z"/>
+    </svg>
+  );
+
+  const EyeOffIcon = (
+    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" fill="currentColor" viewBox="0 0 16 16">
+      <path d="M10.5 8a2.5 2.5 0 1 1-5 0 2.5 2.5 0 0 1 5 0z"/>
+      <path d="M0 8s3-5.5 8-5.5S16 8 16 8s-3 5.5-8 5.5S0 8 0 8zm8 3.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7z"/>
+    </svg>
+  );
+
   const sensors = useSensors(useSensor(PointerSensor, {
     activationConstraint: {
       distance: 5,
@@ -464,13 +482,26 @@ export default function TodoPage() {
               placeholder="Email"
               className="border p-2 rounded text-black w-full"
             />
-            <input
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              placeholder="Password (6+ characters)"
-              className="border p-2 rounded text-black w-full"
-            />
+            {/* Password Input with Toggle */}
+            <div className="relative">
+              <input
+                // 👈 1. Toggle type based on state
+                type={showPassword ? "text" : "password"} 
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="Password (6+ characters)"
+                className="border p-2 rounded text-black w-full pr-10" // Added pr-10 for icon space
+              />
+              {/* 👈 2. The Eye Icon Button */}
+              <button
+                type="button" // Important: Prevents form submission
+                onClick={() => setShowPassword(!showPassword)}
+                className="absolute inset-y-0 right-0 pr-3 flex items-center text-gray-500 hover:text-gray-700"
+              >
+                {/* 3. Toggle Icon Display */}
+                {showPassword ? EyeIcon : EyeOffIcon} 
+              </button>
+            </div>
             
             {/* Show error message if it exists */}
             {authError && (
