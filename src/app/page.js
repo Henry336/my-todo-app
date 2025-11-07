@@ -1,7 +1,17 @@
 "use client";
 
 import { useState, useEffect, useMemo } from "react";
-import { db } from "./firebase"; 
+import { db, auth } from "./firebase"; 
+
+// 👈 --- NEW AUTH IMPORTS ---
+import { 
+  GoogleAuthProvider, 
+  signInWithPopup, 
+  signOut,
+  createUserWithEmailAndPassword, // For Sign Up
+  signInWithEmailAndPassword    // For Sign In
+} from "firebase/auth";
+import { useAuthState } from "react-firebase-hooks/auth";
 
 import { 
   collection, 
@@ -12,7 +22,8 @@ import {
   deleteDoc,
   query,       
   orderBy,     
-  writeBatch
+  writeBatch,
+  where
 } from "firebase/firestore";
 
 // --- DND-KIT IMPORTS ---
@@ -34,14 +45,48 @@ import { CSS } from "@dnd-kit/utilities";
 
 
 // -----------------------------------------------------------------
-// 1. SORTABLE TASK ITEM COMPONENT (UPDATED FOR DUE DATES)
+// 1. SORTABLE TASK ITEM COMPONENT (Unchanged)
 // -----------------------------------------------------------------
-// 👈 --- 'today' prop is now accepted ---
 function SortableTaskItem({ task, index, handleToggleComplete, handleDelete, handleUpdateTask, today }) {
   
   const [isEditing, setIsEditing] = useState(false);
   const [editText, setEditText] = useState(task.text);
   const [editDate, setEditDate] = useState(task.dueDate || "");
+  // 👈 --- NEW LOGIC FOR DATE WARNINGS ---
+  const checkDateWarning = () => {
+    if (!task.dueDate) return null; // No warning if no due date
+    
+    const dueDate = new Date(task.dueDate);
+    const todayDate = new Date(today);
+    const tomorrowDate = new Date(today);
+    tomorrowDate.setDate(tomorrowDate.getDate() + 1); // Get tomorrow's date
+
+    // Set time of all dates to midnight for fair comparison
+    dueDate.setHours(0, 0, 0, 0);
+    todayDate.setHours(0, 0, 0, 0);
+
+    // Ignore completed tasks
+    if (task.isCompleted) return null;
+
+    // Check if the task is past due (due date is yesterday or earlier)
+    if (dueDate < todayDate) {
+      return 'past';
+    }
+
+    // Check if the task is due today
+    if (dueDate.toDateString() === todayDate.toDateString()) {
+      return 'today';
+    }
+    
+    // Check if the task is due tomorrow
+    if (dueDate.toDateString() === tomorrowDate.toDateString()) {
+        return 'tomorrow';
+    }
+
+    return null; // No immediate warning
+  };
+  
+  const dateWarning = checkDateWarning();
 
   const {
     attributes,
@@ -72,7 +117,7 @@ function SortableTaskItem({ task, index, handleToggleComplete, handleDelete, han
   };
 
 
-  // --- "EDIT" VIEW (Updated with date input) ---
+  // --- "EDIT" VIEW ---
   if (isEditing) {
     return (
       <li
@@ -92,7 +137,7 @@ function SortableTaskItem({ task, index, handleToggleComplete, handleDelete, han
             value={editDate}
             onChange={(e) => setEditDate(e.target.value)}
             className="border p-2 rounded text-black w-full"
-            min={today} // 👈 --- 1. CHANGE IS HERE ---
+            min={today}
           />
           <div className="flex gap-2">
             <button onClick={onSave} className="bg-green-500 text-white px-3 py-1 rounded">Save</button>
@@ -103,17 +148,26 @@ function SortableTaskItem({ task, index, handleToggleComplete, handleDelete, han
     );
   }
 
-  // --- "DISPLAY" VIEW (Updated to show due date) ---
+  // --- "DISPLAY" VIEW ---
   return (
     <li
-      ref={setNodeRef}
-      style={style}
-      className={`
-        p-3 mb-2 rounded flex justify-between items-center shadow-sm
-        ${task.isCompleted ? "bg-gray-400 text-gray-600" : "bg-white text-black"}
-      `}
-    >
-      {/* Drag Handle */}
+  ref={setNodeRef}
+  style={style}
+  className={`
+    p-3 mb-2 rounded flex justify-between items-center
+    // 1. Change background based on status/warning
+    ${task.isCompleted 
+      ? "bg-gray-400 text-gray-600 shadow-sm" // Completed: Gray
+      : (dateWarning === 'past' 
+        ? "bg-red-200 text-red-800 shadow-lg" // Past due: RED ALERT
+        : (dateWarning === 'today' || dateWarning === 'tomorrow'
+          ? "bg-yellow-200 text-yellow-800 shadow-md" // Near future: YELLOW WARNING
+          : "bg-white text-black shadow-sm" // Normal: White
+        )
+      )
+    }
+  `}
+>
       <div 
         {...attributes} 
         {...listeners} 
@@ -126,7 +180,6 @@ function SortableTaskItem({ task, index, handleToggleComplete, handleDelete, han
         {index + 1}
       </div>
 
-      {/* Task Text & Due Date */}
       <div className="flex-grow cursor-pointer" onClick={() => handleToggleComplete(task.id, task.isCompleted)}>
         <span className={` ${task.isCompleted ? "line-through" : ""}`}>
           {task.text}
@@ -138,7 +191,6 @@ function SortableTaskItem({ task, index, handleToggleComplete, handleDelete, han
         )}
       </div>
       
-      {/* Buttons */}
       <div className="flex gap-2">
         <button
           onClick={() => setIsEditing(true)}
@@ -159,14 +211,21 @@ function SortableTaskItem({ task, index, handleToggleComplete, handleDelete, han
 
 
 // -----------------------------------------------------------------
-// 2. OUR MAIN PAGE COMPONENT (Updated with Filter)
+// 2. OUR MAIN PAGE COMPONENT (UPDATED WITH AUTH)
 // -----------------------------------------------------------------
 export default function TodoPage() {
+  
+  const [user, loading, error] = useAuthState(auth);
   
   const [tasks, setTasks] = useState([]);
   const [newTask, setNewTask] = useState("");
   const [newDueDate, setNewDueDate] = useState("");
   const [filter, setFilter] = useState("all");
+
+  // 👈 --- NEW STATE FOR EMAIL/PASS LOGIN ---
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [authError, setAuthError] = useState(null);
 
   const sensors = useSensors(useSensor(PointerSensor, {
     activationConstraint: {
@@ -174,10 +233,70 @@ export default function TodoPage() {
     },
   }));
 
-  
+  // --- AUTH FUNCTIONS ---
+
+  const googleProvider = new GoogleAuthProvider();
+  const handleGoogleSignIn = async () => {
+    setAuthError(null); // Clear errors
+    try {
+      await signInWithPopup(auth, googleProvider);
+    } catch (err) {
+      setAuthError(err.message);
+    }
+  };
+
+  const handleSignOut = async () => {
+    setAuthError(null);
+    try {
+      await signOut(auth);
+    } catch (err) {
+      setAuthError(err.message);
+    }
+  };
+
+  // 👈 --- NEW EMAIL/PASS "SIGN UP" FUNCTION ---
+  const handleSignUp = async (e) => {
+    e.preventDefault(); // Stop form from refreshing
+    setAuthError(null);
+    if (password.length < 6) {
+      setAuthError("Password must be at least 6 characters long.");
+      return;
+    }
+    try {
+      await createUserWithEmailAndPassword(auth, email, password);
+      setEmail('');
+      setPassword('');
+    } catch (err) {
+      setAuthError(err.message);
+    }
+  };
+
+  // 👈 --- NEW EMAIL/PASS "SIGN IN" FUNCTION ---
+  const handleSignIn = async (e) => {
+    e.preventDefault();
+    setAuthError(null);
+    try {
+      await signInWithEmailAndPassword(auth, email, password);
+      setEmail('');
+      setPassword('');
+    } catch (err) {
+      setAuthError(err.message);
+    }
+  };
+
+
+  // --- FIRESTORE FUNCTIONS (UNCHANGED) ---
+
   const fetchTasks = async () => {
+    if (!user) return; 
+    
     const tasksCollectionRef = collection(db, "tasks");
-    const q = query(tasksCollectionRef, orderBy("order", "asc"));
+    const q = query(
+      tasksCollectionRef, 
+      where("userId", "==", user.uid),
+      orderBy("order", "asc")
+    );
+    
     const querySnapshot = await getDocs(q);
     const tasksArray = [];
     querySnapshot.forEach((doc) => {
@@ -186,20 +305,19 @@ export default function TodoPage() {
     setTasks(tasksArray);
   };
 
-  
   useEffect(() => {
     fetchTasks();
-  }, []); 
+  }, [user]);
 
-  
   const handleAddTask = async () => {
-    if (newTask.trim() === "") return; 
+    if (newTask.trim() === "" || !user) return;
     try {
       await addDoc(collection(db, "tasks"), {
         text: newTask,
         isCompleted: false,
         order: tasks.length,
-        dueDate: newDueDate || null
+        dueDate: newDueDate || null,
+        userId: user.uid
       });
       setNewTask("");
       setNewDueDate("");
@@ -210,9 +328,9 @@ export default function TodoPage() {
   };
 
   const handleClearCompleted = async () => {
+    if (!user) return;
     const completedTasks = tasks.filter(task => task.isCompleted);
     if (completedTasks.length === 0) return;
-    
     try {
       const batch = writeBatch(db);
       completedTasks.forEach(task => {
@@ -232,6 +350,7 @@ export default function TodoPage() {
   };
 
   const handleUpdateTask = async (id, newText, newDate) => {
+    if (!user) return;
     try {
       const taskDocRef = doc(db, "tasks", id);
       await updateDoc(taskDocRef, {
@@ -245,6 +364,7 @@ export default function TodoPage() {
   };
 
   const handleDelete = async (id) => {
+    if (!user) return;
     try {
       const taskDocRef = doc(db, "tasks", id);
       await deleteDoc(taskDocRef);
@@ -255,6 +375,7 @@ export default function TodoPage() {
   };
 
   const handleToggleComplete = async (id, isCompleted) => {
+    if (!user) return;
     try {
       const taskDocRef = doc(db, "tasks", id);
       await updateDoc(taskDocRef, {
@@ -267,14 +388,13 @@ export default function TodoPage() {
   };
 
   const handleDragEnd = async (event) => {
+    if (!user) return;
     const { active, over } = event;
-
     if (over && active.id !== over.id) {
       const oldIndex = tasks.findIndex((t) => t.id === active.id);
       const newIndex = tasks.findIndex((t) => t.id === over.id);
       const newOrder = arrayMove(tasks, oldIndex, newIndex);
       setTasks(newOrder); 
-
       try {
         const batch = writeBatch(db);
         newOrder.forEach((task, index) => {
@@ -301,132 +421,215 @@ export default function TodoPage() {
 
   
   // -----------------------------------------------------------------
-  // 3. MAIN JSX (RETURN)
+  // 3. MAIN JSX (RETURN - UPDATED WITH NEW LOGIN FORM)
   // -----------------------------------------------------------------
   
-  // 👈 --- 2. GET TODAY'S DATE HERE ---
   const today = new Date().toISOString().split('T')[0];
+
+  if (loading) {
+    return (
+      <main className="flex min-h-screen flex-col items-center justify-center p-6 bg-gray-100">
+        <p>Loading...</p>
+      </main>
+    );
+  }
 
   return (
     <main className="flex min-h-screen flex-col items-center p-6 md:p-24 bg-gray-100">
-      <h1 className="text-5xl font-extrabold mb-8 text-gray-900">My To-Do List</h1>
+      
+      <div className="w-full max-w-md flex justify-between items-center mb-8">
+        <h1 className="text-5xl font-extrabold text-gray-900">
+          My To-Do List
+        </h1>
+        {user && (
+          <button 
+            onClick={handleSignOut} 
+            className="bg-gray-200 text-gray-800 px-4 py-2 rounded-lg text-sm font-medium hover:bg-gray-300"
+          >
+            Sign Out
+          </button>
+        )}
+      </div>
 
-      {/* --- Card Wrapper --- */}
-      <div className="w-full max-w-md bg-white rounded-lg shadow-lg p-6">
-
-        {/* --- Form (Updated with Date Input) --- */}
-        <form 
-          onSubmit={handleSubmit}
-          className="flex flex-col gap-2 mb-4 w-full"
-        >
-          <div className="flex flex-col sm:flex-row gap-2">
-            <input
-              type="text"
-              value={newTask} 
-              onChange={(e) => setNewTask(e.target.value)}
-              placeholder="Enter a new task"
+      {!user ? (
+        // --- 👈 NEW LOGIN SCREEN ---
+        <div className="w-full max-w-md bg-white rounded-lg shadow-lg p-6">
+          
+          {/* Email/Password Form */}
+          <form className="flex flex-col gap-3">
+            <input 
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="Email"
               className="border p-2 rounded text-black w-full"
             />
-            <button
-              type="submit"
-              className="bg-indigo-600 text-white px-4 py-2 rounded w-full sm:w-auto"
-            >
-              Add Task
-            </button>
-          </div>
-          <input
-            type="date"
-            value={newDueDate}
-            onChange={(e) => setNewDueDate(e.target.value)}
-            className="border p-2 rounded text-black w-full"
-            min={today} // 👈 --- 3. CHANGE IS HERE ---
-          />
-        </form>
+            <input
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder="Password (6+ characters)"
+              className="border p-2 rounded text-black w-full"
+            />
+            
+            {/* Show error message if it exists */}
+            {authError && (
+              <p className="text-red-500 text-sm text-center">
+                {/* This expression cleans up the raw Firebase error for the user */}
+                {authError.replace("Firebase: ", "").replace(/\s*\(auth[^)]*\)/g, "")}
+              </p>
+            )}
 
-        {/* --- List Section --- */}
-        <div className="w-full">
-          
-          {/* --- Filter Buttons --- */}
-          <div className="flex justify-center gap-2 mb-4 border-b pb-4">
-            <button 
-              onClick={() => setFilter("all")}
-              className={`px-3 py-1 text-sm rounded-lg ${filter === 'all' ? 'bg-indigo-600 text-white' : 'text-gray-500 hover:bg-gray-200'}`}
-            >
-              All
-            </button>
-            <button 
-              onClick={() => setFilter("active")}
-              className={`px-3 py-1 text-sm rounded-lg ${filter === 'active' ? 'bg-indigo-600 text-white' : 'text-gray-500 hover:bg-gray-200'}`}
-            >
-              Active
-            </button>
-            <button 
-              onClick={() => setFilter("completed")}
-              className={`px-3 py-1 text-sm rounded-lg ${filter === 'completed' ? 'bg-indigo-600 text-white' : 'text-gray-500 hover:bg-gray-200'}`}
-            >
-              Completed
-            </button>
+           <div className="flex gap-2">
+              <button
+                onClick={(e) => handleSignIn(e)} // 👈 NEW: Pass the event 'e'
+                className="bg-indigo-600 text-white p-2 rounded w-full font-medium hover:bg-indigo-700"
+              >
+                Sign In
+              </button>
+              <button
+                onClick={(e) => handleSignUp(e)} // 👈 NEW: Pass the event 'e'
+                className="bg-gray-200 text-gray-800 p-2 rounded w-full font-medium hover:bg-gray-300"
+              >
+                Sign Up
+              </button>
+            </div>
+          </form>
+
+          {/* Divider */}
+          <div className="flex items-center my-4">
+            <div className="flex-grow border-t border-gray-300"></div>
+            <span className="flex-shrink mx-4 text-gray-400 text-sm">OR</span>
+            <div className="flex-grow border-t border-gray-300"></div>
           </div>
 
-          {filteredTasks.length === 0 ? (
-            // Empty State
-            <div className="text-center p-10">
-              <p className="text-gray-500 font-semibold">
-                {filter === 'all' ? 'You have no tasks!' : `No ${filter} tasks.`}
-              </p>
-              <p className="text-gray-400 text-sm">
-                {filter === 'all' ? 'Add one above to get started.' : 'Keep up the good work!'}
-              </p>
-            </div>
-          ) : (
-            // List
-            <>
-              {/* Info Bar */}
-              <div className="flex justify-between items-center mb-2">
-                <p className="text-gray-500 text-sm">
-                  {filteredTasks.filter(t => !t.isCompleted).length} tasks left
-                </p>
-                
-                {tasks.some(t => t.isCompleted) && (
-                  <button 
-                    onClick={handleClearCompleted}
-                    className="text-red-500 text-sm font-medium hover:text-red-700"
-                  >
-                    Clear Completed
-                  </button>
-                )}
-              </div>
-              
-              <DndContext 
-                sensors={sensors}
-                collisionDetection={closestCenter}
-                onDragEnd={handleDragEnd}
-              >
-                <SortableContext 
-                  items={filteredTasks.map(t => t.id)}
-                  strategy={verticalListSortingStrategy}
-                >
-                  <ul className="w-full">
-                    {filteredTasks.map((task, index) => (
-                      <SortableTaskItem 
-                        key={task.id} 
-                        task={task} 
-                        index={tasks.findIndex(t => t.id === task.id)}
-                        handleToggleComplete={handleToggleComplete}
-                        handleDelete={handleDelete}
-                        handleUpdateTask={handleUpdateTask}
-                        today={today} // 👈 --- 4. CHANGE IS HERE ---
-                      />
-                    ))}
-                  </ul>
-              </SortableContext>
-            </DndContext>
-            </>
-          )}
+          {/* Google Sign-in Button */}
+          <button 
+            onClick={handleGoogleSignIn}
+            className="bg-blue-500 text-white p-2 rounded w-full font-medium hover:bg-blue-600"
+          >
+            Sign in with Google
+          </button>
         </div>
 
-      </div> 
-      {/* --- END OF CARD WRAPPER --- */}
+      ) : (
+        // --- IF LOGGED IN, SHOW THE APP ---
+        <div className="w-full max-w-md bg-white rounded-lg shadow-lg p-6">
+
+          {/* --- Form --- */}
+          <form 
+            onSubmit={handleSubmit}
+            className="flex flex-col gap-2 mb-4 w-full"
+          >
+            <div className="flex flex-col sm:flex-row gap-2">
+              <input
+                type="text"
+                value={newTask} 
+                onChange={(e) => setNewTask(e.target.value)}
+                placeholder="Enter a new task"
+                className="border p-2 rounded text-black w-full"
+              />
+              <button
+                type="submit"
+                className="bg-indigo-600 text-white px-4 py-2 rounded w-full sm:w-auto"
+              >
+                Add Task
+              </button>
+            </div>
+            <input
+              type="date"
+              value={newDueDate}
+              onChange={(e) => setNewDueDate(e.target.value)}
+              className="border p-2 rounded text-black w-full"
+              min={today}
+            />
+          </form>
+
+          {/* --- List Section --- */}
+          <div className="w-full">
+            
+            {/* --- Filter Buttons --- */}
+            <div className="flex justify-center gap-2 mb-4 border-b pb-4">
+              <button 
+                onClick={() => setFilter("all")}
+                className={`px-3 py-1 text-sm rounded-lg ${filter === 'all' ? 'bg-indigo-600 text-white' : 'text-gray-500 hover:bg-gray-200'}`}
+              >
+                All
+              </button>
+              <button 
+                onClick={() => setFilter("active")}
+                className={`px-3 py-1 text-sm rounded-lg ${filter === 'active' ? 'bg-indigo-600 text-white' : 'text-gray-500 hover:bg-gray-200'}`}
+              >
+                Active
+              </button>
+              <button 
+                onClick={() => setFilter("completed")}
+                className={`px-3 py-1 text-sm rounded-lg ${filter === 'completed' ? 'bg-indigo-600 text-white' : 'text-gray-500 hover:bg-gray-200'}`}
+              >
+                Completed
+              </button>
+            </div>
+
+            {filteredTasks.length === 0 ? (
+              // Empty State
+              <div className="text-center p-10">
+                <p className="text-gray-500 font-semibold">
+                  {filter === 'all' ? 'You have no tasks!' : `No ${filter} tasks.`}
+                </p>
+                <p className="text-gray-400 text-sm">
+                  {filter === 'all' ? 'Add one above to get started.' : 'Keep up the good work!'}
+                </p>
+              </div>
+            ) : (
+              // List
+              <>
+                {/* Info Bar */}
+                <div className="flex justify-between items-center mb-2">
+                  <p className="text-gray-500 text-sm">
+                    {filteredTasks.filter(t => !t.isCompleted).length} tasks left
+                  </p>
+                  
+                  {tasks.some(t => t.isCompleted) && (
+                    <button 
+                      onClick={handleClearCompleted}
+                      className="text-red-500 text-sm font-medium hover:text-red-700"
+                    >
+                      Clear Completed
+                    </button>
+                  )}
+                </div>
+                
+                <DndContext 
+                  sensors={sensors}
+                  collisionDetection={closestCenter}
+                  onDragEnd={handleDragEnd}
+                >
+                  <SortableContext 
+                    items={filteredTasks.map(t => t.id)}
+                    strategy={verticalListSortingStrategy}
+                  >
+                    <ul className="w-full">
+                      {filteredTasks.map((task) => (
+                        <SortableTaskItem 
+                          key={task.id} 
+                          task={task} 
+                          index={tasks.findIndex(t => t.id === task.id)}
+                          handleToggleComplete={handleToggleComplete}
+                          handleDelete={handleDelete}
+                          handleUpdateTask={handleUpdateTask}
+                          today={today}
+                        />
+                      ))}
+                    </ul>
+                  </SortableContext>
+                </DndContext>
+              </>
+            )}
+          </div>
+
+        </div> 
+      )} 
+      {/* --- END OF CONDITIONAL RENDER --- */}
       
     </main>
   );

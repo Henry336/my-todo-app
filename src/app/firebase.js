@@ -1,9 +1,8 @@
-// Import the functions you need from the SDKs
 import { initializeApp } from "firebase/app";
 import { getFirestore } from "firebase/firestore";
+import { getAuth } from "firebase/auth"; // 👈 --- ADD THIS IMPORT
 
 // Your web app's Firebase configuration
-// This time, we read them from the .env.local file
 const firebaseConfig = {
   apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
   authDomain: process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN,
@@ -14,14 +13,8 @@ const firebaseConfig = {
 };
 
 // Initialize Firebase
-// We check if the app is already initialized to avoid errors
-let app;
-try {
-  app = initializeApp(firebaseConfig);
-} catch (e) {
-  console.error("Firebase initialization error", e);
-}
+const app = initializeApp(firebaseConfig);
 
-// Initialize Firestore and export it
-// We will use this 'db' variable in our page.js file
+// Initialize and export services
 export const db = getFirestore(app);
+export const auth = getAuth(app); // 👈 --- ADD THIS LINE
