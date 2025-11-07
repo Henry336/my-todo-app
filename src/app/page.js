@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react"; // <-- This is the fixed line
+import { useState, useEffect, useMemo } from "react";
 import { db } from "./firebase"; 
 
 import { 
@@ -34,24 +34,24 @@ import { CSS } from "@dnd-kit/utilities";
 
 
 // -----------------------------------------------------------------
-// 1. SORTABLE TASK ITEM COMPONENT (WITH NEW LOGIC)
+// 1. SORTABLE TASK ITEM COMPONENT (UPDATED FOR DUE DATES)
 // -----------------------------------------------------------------
-function SortableTaskItem({ task, index, handleToggleComplete, handleDelete, handleUpdateTaskText }) {
+// 👈 --- 'today' prop is now accepted ---
+function SortableTaskItem({ task, index, handleToggleComplete, handleDelete, handleUpdateTask, today }) {
   
   const [isEditing, setIsEditing] = useState(false);
   const [editText, setEditText] = useState(task.text);
-  
+  const [editDate, setEditDate] = useState(task.dueDate || "");
+
   const {
     attributes,
     listeners,
     setNodeRef,
     transform,
     transition,
-    isDragging, // We need this to stop animations
+    isDragging,
   } = useSortable({ id: task.id });
 
-  // 👈 --- NEW LOGIC TO CHECK IF TASK IS #1 ---
-  // This is true if the item is the first in the list
   const isPriorityOne = index === 0;
 
   const style = {
@@ -61,23 +61,24 @@ function SortableTaskItem({ task, index, handleToggleComplete, handleDelete, han
 
   const onSave = () => {
     if (editText.trim() === "") return;
-    handleUpdateTaskText(task.id, editText);
+    handleUpdateTask(task.id, editText, editDate);
     setIsEditing(false);
   };
 
   const onCancel = () => {
     setIsEditing(false);
     setEditText(task.text);
+    setEditDate(task.dueDate || "");
   };
 
 
-  // --- "EDIT" VIEW ---
+  // --- "EDIT" VIEW (Updated with date input) ---
   if (isEditing) {
     return (
       <li
         ref={setNodeRef}
         style={style}
-        className="p-3 mb-2 rounded bg-white text-black flex justify-between items-center shadow-sm"
+        className="p-3 mb-2 rounded bg-white text-black flex flex-col gap-2 shadow-sm"
       >
         <input 
           type="text"
@@ -85,15 +86,24 @@ function SortableTaskItem({ task, index, handleToggleComplete, handleDelete, han
           onChange={(e) => setEditText(e.target.value)}
           className="border p-2 rounded text-black w-full"
         />
-        <div className="flex gap-2 ml-2">
-          <button onClick={onSave} className="bg-green-500 text-white px-3 py-1 rounded">Save</button>
-          <button onClick={onCancel} className="bg-gray-400 text-white px-3 py-1 rounded">Cancel</button>
+        <div className="flex justify-between gap-2">
+          <input
+            type="date"
+            value={editDate}
+            onChange={(e) => setEditDate(e.target.value)}
+            className="border p-2 rounded text-black w-full"
+            min={today} // 👈 --- 1. CHANGE IS HERE ---
+          />
+          <div className="flex gap-2">
+            <button onClick={onSave} className="bg-green-500 text-white px-3 py-1 rounded">Save</button>
+            <button onClick={onCancel} className="bg-gray-400 text-white px-3 py-1 rounded">Cancel</button>
+          </div>
         </div>
       </li>
     );
   }
 
-  // --- "DISPLAY" VIEW (with new logic) ---
+  // --- "DISPLAY" VIEW (Updated to show due date) ---
   return (
     <li
       ref={setNodeRef}
@@ -103,11 +113,10 @@ function SortableTaskItem({ task, index, handleToggleComplete, handleDelete, han
         ${task.isCompleted ? "bg-gray-400 text-gray-600" : "bg-white text-black"}
       `}
     >
-      {/* 👈 --- UPDATED DRAG HANDLE WITH NEW LOGIC --- */}
+      {/* Drag Handle */}
       <div 
         {...attributes} 
         {...listeners} 
-        // This logic applies all your new styles:
         className={`
           p-2 cursor-grab w-10 text-center font-bold transition-all
           ${isPriorityOne ? 'text-red-500 text-lg' : 'text-gray-500'}
@@ -117,13 +126,17 @@ function SortableTaskItem({ task, index, handleToggleComplete, handleDelete, han
         {index + 1}
       </div>
 
-      {/* Task Text */}
-      <span 
-        className={`flex-grow cursor-pointer ${task.isCompleted ? "line-through" : ""}`}
-        onClick={() => handleToggleComplete(task.id, task.isCompleted)}
-      >
-        {task.text}
-      </span>
+      {/* Task Text & Due Date */}
+      <div className="flex-grow cursor-pointer" onClick={() => handleToggleComplete(task.id, task.isCompleted)}>
+        <span className={` ${task.isCompleted ? "line-through" : ""}`}>
+          {task.text}
+        </span>
+        {task.dueDate && (
+          <p className={`text-xs ${task.isCompleted ? 'text-gray-600' : 'text-gray-500'}`}>
+            Due: {task.dueDate}
+          </p>
+        )}
+      </div>
       
       {/* Buttons */}
       <div className="flex gap-2">
@@ -146,12 +159,14 @@ function SortableTaskItem({ task, index, handleToggleComplete, handleDelete, han
 
 
 // -----------------------------------------------------------------
-// 2. OUR MAIN PAGE COMPONENT
+// 2. OUR MAIN PAGE COMPONENT (Updated with Filter)
 // -----------------------------------------------------------------
 export default function TodoPage() {
   
   const [tasks, setTasks] = useState([]);
   const [newTask, setNewTask] = useState("");
+  const [newDueDate, setNewDueDate] = useState("");
+  const [filter, setFilter] = useState("all");
 
   const sensors = useSensors(useSensor(PointerSensor, {
     activationConstraint: {
@@ -183,9 +198,11 @@ export default function TodoPage() {
       await addDoc(collection(db, "tasks"), {
         text: newTask,
         isCompleted: false,
-        order: tasks.length 
+        order: tasks.length,
+        dueDate: newDueDate || null
       });
       setNewTask("");
+      setNewDueDate("");
       fetchTasks(); 
     } catch (e) {
       console.error("Error adding document: ", e);
@@ -214,15 +231,16 @@ export default function TodoPage() {
     handleAddTask(); 
   };
 
-  const handleUpdateTaskText = async (id, newText) => {
+  const handleUpdateTask = async (id, newText, newDate) => {
     try {
       const taskDocRef = doc(db, "tasks", id);
       await updateDoc(taskDocRef, {
-        text: newText
+        text: newText,
+        dueDate: newDate || null
       });
       fetchTasks();
     } catch (e) {
-      console.error("Error updating document text: ", e);
+      console.error("Error updating document: ", e);
     }
   };
 
@@ -271,85 +289,145 @@ export default function TodoPage() {
     }
   };
 
+  const filteredTasks = useMemo(() => {
+    if (filter === "active") {
+      return tasks.filter(task => !task.isCompleted);
+    }
+    if (filter === "completed") {
+      return tasks.filter(task => task.isCompleted);
+    }
+    return tasks;
+  }, [tasks, filter]);
 
+  
   // -----------------------------------------------------------------
   // 3. MAIN JSX (RETURN)
   // -----------------------------------------------------------------
+  
+  // 👈 --- 2. GET TODAY'S DATE HERE ---
+  const today = new Date().toISOString().split('T')[0];
+
   return (
     <main className="flex min-h-screen flex-col items-center p-6 md:p-24 bg-gray-100">
-      <h1 className="text-4xl font-bold mb-8">My To-Do List</h1>
+      <h1 className="text-5xl font-extrabold mb-8 text-gray-900">My To-Do List</h1>
 
-      <form 
-        onSubmit={handleSubmit}
-        className="flex flex-col sm:flex-row gap-2 mb-4 w-full max-w-md"
-      >
-        <input
-          type="text"
-          value={newTask} 
-          onChange={(e) => setNewTask(e.target.value)}
-          placeholder="Enter a new task"
-          className="border p-2 rounded text-black w-full"
-        />
-        <button
-          type="submit"
-          className="bg-indigo-600 text-white px-4 py-2 rounded w-full sm:w-auto"
+      {/* --- Card Wrapper --- */}
+      <div className="w-full max-w-md bg-white rounded-lg shadow-lg p-6">
+
+        {/* --- Form (Updated with Date Input) --- */}
+        <form 
+          onSubmit={handleSubmit}
+          className="flex flex-col gap-2 mb-4 w-full"
         >
-          Add Task
-        </button>
-      </form>
-
-      <div className="w-full max-w-md">
-        {tasks.length === 0 ? (
-          // Empty State
-          <div className="text-center p-10 bg-white rounded-lg shadow-sm">
-            <p className="text-gray-500 font-semibold">You have no tasks!</p>
-            <p className="text-gray-400 text-sm">Add one above to get started.</p>
-          </div>
-        ) : (
-          // List
-          <>
-            {/* Info Bar */}
-            <div className="flex justify-between items-center mb-2">
-              <p className="text-gray-500 text-sm">
-                {tasks.filter(t => !t.isCompleted).length} tasks left
-              </p>
-              
-              {tasks.some(t => t.isCompleted) && (
-                <button 
-                  onClick={handleClearCompleted}
-                  className="text-red-500 text-sm font-medium hover:text-red-700"
-                >
-                  Clear Completed
-                </button>
-              )}
-            </div>
-            
-            <DndContext 
-              sensors={sensors}
-              collisionDetection={closestCenter}
-              onDragEnd={handleDragEnd}
+          <div className="flex flex-col sm:flex-row gap-2">
+            <input
+              type="text"
+              value={newTask} 
+              onChange={(e) => setNewTask(e.target.value)}
+              placeholder="Enter a new task"
+              className="border p-2 rounded text-black w-full"
+            />
+            <button
+              type="submit"
+              className="bg-indigo-600 text-white px-4 py-2 rounded w-full sm:w-auto"
             >
-              <SortableContext 
-                items={tasks.map(t => t.id)}
-                strategy={verticalListSortingStrategy}
+              Add Task
+            </button>
+          </div>
+          <input
+            type="date"
+            value={newDueDate}
+            onChange={(e) => setNewDueDate(e.target.value)}
+            className="border p-2 rounded text-black w-full"
+            min={today} // 👈 --- 3. CHANGE IS HERE ---
+          />
+        </form>
+
+        {/* --- List Section --- */}
+        <div className="w-full">
+          
+          {/* --- Filter Buttons --- */}
+          <div className="flex justify-center gap-2 mb-4 border-b pb-4">
+            <button 
+              onClick={() => setFilter("all")}
+              className={`px-3 py-1 text-sm rounded-lg ${filter === 'all' ? 'bg-indigo-600 text-white' : 'text-gray-500 hover:bg-gray-200'}`}
+            >
+              All
+            </button>
+            <button 
+              onClick={() => setFilter("active")}
+              className={`px-3 py-1 text-sm rounded-lg ${filter === 'active' ? 'bg-indigo-600 text-white' : 'text-gray-500 hover:bg-gray-200'}`}
+            >
+              Active
+            </button>
+            <button 
+              onClick={() => setFilter("completed")}
+              className={`px-3 py-1 text-sm rounded-lg ${filter === 'completed' ? 'bg-indigo-600 text-white' : 'text-gray-500 hover:bg-gray-200'}`}
+            >
+              Completed
+            </button>
+          </div>
+
+          {filteredTasks.length === 0 ? (
+            // Empty State
+            <div className="text-center p-10">
+              <p className="text-gray-500 font-semibold">
+                {filter === 'all' ? 'You have no tasks!' : `No ${filter} tasks.`}
+              </p>
+              <p className="text-gray-400 text-sm">
+                {filter === 'all' ? 'Add one above to get started.' : 'Keep up the good work!'}
+              </p>
+            </div>
+          ) : (
+            // List
+            <>
+              {/* Info Bar */}
+              <div className="flex justify-between items-center mb-2">
+                <p className="text-gray-500 text-sm">
+                  {filteredTasks.filter(t => !t.isCompleted).length} tasks left
+                </p>
+                
+                {tasks.some(t => t.isCompleted) && (
+                  <button 
+                    onClick={handleClearCompleted}
+                    className="text-red-500 text-sm font-medium hover:text-red-700"
+                  >
+                    Clear Completed
+                  </button>
+                )}
+              </div>
+              
+              <DndContext 
+                sensors={sensors}
+                collisionDetection={closestCenter}
+                onDragEnd={handleDragEnd}
               >
-                <ul className="w-full">
-                  {tasks.map((task, index) => (
-                    <SortableTaskItem 
-                      key={task.id} 
-                      task={task} 
-                      index={index}
-                      handleToggleComplete={handleToggleComplete}
-                      handleDelete={handleDelete}
-                      handleUpdateTaskText={handleUpdateTaskText}
-                    />
-                  ))}
-                </ul>
+                <SortableContext 
+                  items={filteredTasks.map(t => t.id)}
+                  strategy={verticalListSortingStrategy}
+                >
+                  <ul className="w-full">
+                    {filteredTasks.map((task, index) => (
+                      <SortableTaskItem 
+                        key={task.id} 
+                        task={task} 
+                        index={tasks.findIndex(t => t.id === task.id)}
+                        handleToggleComplete={handleToggleComplete}
+                        handleDelete={handleDelete}
+                        handleUpdateTask={handleUpdateTask}
+                        today={today} // 👈 --- 4. CHANGE IS HERE ---
+                      />
+                    ))}
+                  </ul>
               </SortableContext>
             </DndContext>
-          </>
-        )}
-      </div>
+            </>
+          )}
+        </div>
+
+      </div> 
+      {/* --- END OF CARD WRAPPER --- */}
+      
     </main>
   );
 }
